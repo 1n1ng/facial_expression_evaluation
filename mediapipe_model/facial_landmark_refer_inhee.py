@@ -8,18 +8,26 @@ import os
 
 def calculate_au12(landmarks):
     # Lip Corner Puller - Distance between the corners of the mouth
-    point_48 = np.array(landmarks[48])
-    point_54 = np.array(landmarks[54])
-    return dist.euclidean(point_48, point_54)
+    try:
+        point_48 = np.array(landmarks[48])
+        point_54 = np.array(landmarks[54])
+        return dist.euclidean(point_48, point_54)
+    except IndexError:
+        print("랜드마크 인덱스 오류: 충분한 얼굴 특징점이 감지되지 않았습니다.")
+        return 0.0
 
 def calculate_au25_26(landmarks):
     # Lips Part and Jaw Drop - Distance between upper and lower lips and jaw
-    point_51 = np.array(landmarks[51])
-    point_57 = np.array(landmarks[57])
-    point_8 = np.array(landmarks[8])
-    lips_part = dist.euclidean(point_51, point_57)
-    jaw_drop = dist.euclidean(point_57, point_8)
-    return lips_part, jaw_drop
+    try:
+        point_51 = np.array(landmarks[51])
+        point_57 = np.array(landmarks[57])
+        point_8 = np.array(landmarks[8])
+        lips_part = dist.euclidean(point_51, point_57)
+        jaw_drop = dist.euclidean(point_57, point_8)
+        return lips_part, jaw_drop
+    except IndexError:
+        print("랜드마크 인덱스 오류: 충분한 얼굴 특징점이 감지되지 않았습니다.")
+        return 0.0, 0.0
 
 def calculate_aus(landmarks):
     au12 = calculate_au12(landmarks)
@@ -31,8 +39,8 @@ class FaceMeshDetector:
         self,
         static_image_mode=False,
         max_num_faces=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_detection_confidence=0.3,  # 신뢰도 임계값 낮춤
+        min_tracking_confidence=0.3,   # 트래킹 신뢰도 임계값 낮춤
     ):
         self.static_image_mode = static_image_mode
         self.max_num_faces = max_num_faces
@@ -83,13 +91,30 @@ class FaceMeshDetector:
 
     def findReferenceValues(self, img):
         img, faces = self.findFaceMesh(img, draw=False)
-        if faces:
-            return calculate_aus(faces)
+        if faces and len(faces) >= 468:  # 충분한 랜드마크가 있는지 확인
+            try:
+                return calculate_aus(faces)
+            except Exception as e:
+                print(f"얼굴 특징점 계산 중 오류 발생: {e}")
+                return None
         return None
 
 def main():
     detector = FaceMeshDetector()
     cap = cv2.VideoCapture(0)
+    
+    # 카메라 해상도 설정
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    # 웜업 - 카메라 초기화 시간 부여
+    print("카메라 초기화 중...")
+    for _ in range(10):
+        ret, _ = cap.read()
+        if not ret:
+            print("카메라 초기화 실패, 다시 시도하세요.")
+            return
+        time.sleep(0.1)
     
     start_time = time.time()
     duration = 10  # 10초 동안 측정
@@ -128,10 +153,13 @@ def main():
     
     if au_values:
         mean_values = np.mean(au_values, axis=0)
+        
+        # 기준값에 약간의 감소 적용 (역치 낮추기)
+        # 기준값을 약간 작게 설정하여 작은 변화도 더 크게 감지
         reference_data = {
-            'au12': float(mean_values[0]),
-            'au25': float(mean_values[1]),
-            'au26': float(mean_values[2])
+            'au12': float(mean_values[0] * 0.85),  # 15% 감소
+            'au25': float(mean_values[1] * 0.9),   # 10% 감소
+            'au26': float(mean_values[2] * 0.9)    # 10% 감소
         }
         
         with open('reference_values.json', 'w') as f:

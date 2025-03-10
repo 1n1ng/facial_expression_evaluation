@@ -14,18 +14,26 @@ recognizer = mp_vision.GestureRecognizer.create_from_options(options)
 
 def calculate_au12(landmarks):
     # Lip Corner Puller - Distance between the corners of the mouth
-    point_48 = np.array(landmarks[48])
-    point_54 = np.array(landmarks[54])
-    return dist.euclidean(point_48, point_54)
+    try:
+        point_48 = np.array(landmarks[48])
+        point_54 = np.array(landmarks[54])
+        return dist.euclidean(point_48, point_54)
+    except IndexError:
+        print("랜드마크 인덱스 오류: 충분한 얼굴 특징점이 감지되지 않았습니다.")
+        return 0.0
 
 def calculate_au25_26(landmarks):
     # Lips Part and Jaw Drop - Distance between upper and lower lips and jaw
-    point_51 = np.array(landmarks[51])
-    point_57 = np.array(landmarks[57])
-    point_8 = np.array(landmarks[8])
-    lips_part = dist.euclidean(point_51, point_57)
-    jaw_drop = dist.euclidean(point_57, point_8)
-    return lips_part, jaw_drop
+    try:
+        point_51 = np.array(landmarks[51])
+        point_57 = np.array(landmarks[57])
+        point_8 = np.array(landmarks[8])
+        lips_part = dist.euclidean(point_51, point_57)
+        jaw_drop = dist.euclidean(point_57, point_8)
+        return lips_part, jaw_drop
+    except IndexError:
+        print("랜드마크 인덱스 오류: 충분한 얼굴 특징점이 감지되지 않았습니다.")
+        return 0.0, 0.0
 
 def calculate_aus(landmarks):
     au12 = calculate_au12(landmarks)
@@ -38,8 +46,8 @@ class FaceMeshDetector:
         self,
         static_image_mode=False,
         max_num_faces=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_detection_confidence=0.3,  # 신뢰도 임계값 낮춤
+        min_tracking_confidence=0.3,   # 트래킹 신뢰도 임계값 낮춤
     ):
 
         self.static_image_mode = static_image_mode
@@ -83,13 +91,27 @@ class FaceMeshDetector:
         au25_change = (au25 - ref_au25) / ref_au25 * 100
         au26_change = (au26 - ref_au26) / ref_au26 * 100
         
-        # 가중치 적용 (총합 100%)
-        score = 50 + (
+        # 변화율이 양수일 때는 증폭시키고, 음수일 때는 약화시킴
+        if au12_change > 0:
+            au12_change = au12_change * 2.5  # 미소 확대 효과 증폭
+        
+        if au25_change > 0:
+            au25_change = au25_change * 1.5
+            
+        if au26_change > 0:
+            au26_change = au26_change * 1.5
+            
+        # 기본 점수를 50이 아닌 60으로 시작 (역치 낮추기)
+        score = 60 + (
             0.60 * au12_change +  # 60%
             0.20 * au25_change +  # 20%
             0.20 * au26_change    # 20%
         )
         
+        # 매우 작은 미소도 감지
+        if au12_change > 0:
+            score += 10  # 미소의 방향이 맞다면 기본 점수 추가
+            
         return np.clip(score, 0, 100)  # 0-100 범위로 제한
 
     def findFaceMesh(self, img, draw=True):
@@ -127,12 +149,16 @@ class FaceMeshDetector:
 
     def findSmileScore(self, img):
         img, faces, _ = self.findFaceMesh(img, draw=False)
-        if faces:
-            aus = calculate_aus(faces)
-            if aus:
-                score = self.calculate_smile_score(aus)
-                self.stored_scores.append(score)
-            return score
+        if faces and len(faces) >= 468:  # 충분한 랜드마크가 있는지 확인
+            try:
+                aus = calculate_aus(faces)
+                if aus:
+                    score = self.calculate_smile_score(aus)
+                    self.stored_scores.append(score)
+                    return score
+            except Exception as e:
+                print(f"얼굴 특징점 계산 중 오류 발생: {e}")
+                return None
         return None
 
 
@@ -141,6 +167,19 @@ def main():
     detector = FaceMeshDetector()
 
     cap = cv2.VideoCapture(0)
+    
+    # 카메라 해상도 설정
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    # 웜업 - 카메라 초기화 시간 부여
+    print("카메라 초기화 중...")
+    for _ in range(10):
+        ret, _ = cap.read()
+        if not ret:
+            print("카메라 초기화 실패, 다시 시도하세요.")
+            return
+        time.sleep(0.1)
 
     start_time = time.time()
     duration = 10  # 10초 측정
@@ -161,11 +200,29 @@ def main():
             break
 
         img, faces, _ = detector.findFaceMesh(img)  # Draw mesh
+        
+        # 얼굴 감지 상태 표시
         if faces:
+            cv2.putText(img, "Face Detected", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             score = detector.findSmileScore(img)
             if score is not None:
-                cv2.putText(img, f"Smile score: {score:.2f}", 
-                           (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                # 색상을 점수에 따라 변경 (낮은 점수도 녹색으로 표시)
+                color = (0, 255, 0)  # 항상 녹색으로 표시
+                
+                # 점수 표현 방식 수정 - 점수가 낮아도 긍정적인 메시지 표시
+                if score >= 80:
+                    message = f"Excellent! Score: {score:.1f}"
+                elif score >= 60:
+                    message = f"Great! Score: {score:.1f}"
+                elif score >= 40:
+                    message = f"Good! Score: {score:.1f}"
+                else:
+                    message = f"Start! Score: {score:.1f}"
+                    
+                cv2.putText(img, message, 
+                           (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        else:
+            cv2.putText(img, "No Face Detected", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         cv2.putText(img, f"Measuring: {int(duration - elapsed_time)}seconds left", 
                     (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
@@ -182,8 +239,25 @@ def main():
         # 가중 평균 계산 (최근 값에 더 높은 가중치 부여)
         weights = np.linspace(1, 2, len(detector.stored_scores))
         weights = weights / np.sum(weights)  # 정규화
+        
+        # 최고 점수와 평균 점수 계산
+        max_score = np.max(detector.stored_scores)
         final_score = np.average(detector.stored_scores, weights=weights)
-        print(f"\n최종 미소 점수: {final_score:.2f}/100")
+        
+        # 최고 점수에 가중치를 두어 최종 점수 계산 (최고 점수 50%, 가중 평균 50%)
+        biased_final_score = 0.5 * max_score + 0.5 * final_score
+        
+        print(f"\n최종 미소 점수: {biased_final_score:.2f}/100")
+        
+        # 긍정적인 피드백 메시지
+        if biased_final_score >= 80:
+            print("훌륭합니다! 아주 좋은 미소를 지으셨어요!")
+        elif biased_final_score >= 60:
+            print("잘 하셨어요! 좋은 미소였습니다!")
+        elif biased_final_score >= 40:
+            print("좋아요! 미소가 보였습니다!")
+        else:
+            print("잘 하셨어요! 다음에는 더 환하게 웃어볼까요?")
     else:
         print("측정에 실패했습니다. 다시 시도해주세요.")
 
