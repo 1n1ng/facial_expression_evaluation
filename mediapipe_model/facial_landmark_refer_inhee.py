@@ -2,15 +2,9 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from scipy.spatial import distance as dist
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision as mp_vision
-import os
 import time
 import json
-
-base_options = mp_python.BaseOptions(model_asset_path='./gesture_recognizer.task')
-options = mp_vision.GestureRecognizerOptions(base_options=base_options)
-recognizer = mp_vision.GestureRecognizer.create_from_options(options)
+import os
 
 def calculate_au12(landmarks):
     # Lip Corner Puller - Distance between the corners of the mouth
@@ -33,7 +27,6 @@ def calculate_aus(landmarks):
     return au12, au25, au26
 
 class FaceMeshDetector:
-    
     def __init__(
         self,
         static_image_mode=False,
@@ -41,13 +34,11 @@ class FaceMeshDetector:
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5,
     ):
-
         self.static_image_mode = static_image_mode
         self.max_num_faces = max_num_faces
         self.min_detection_confidence = min_detection_confidence
         self.min_tracking_confidence = min_tracking_confidence
 
-        # Facemesh
         self.mp_face_mesh = mp.solutions.face_mesh
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             self.static_image_mode,
@@ -56,41 +47,9 @@ class FaceMeshDetector:
             self.min_detection_confidence,
             self.min_tracking_confidence,
         )
-        # hand gesture recognizer
-        self.recognizer = recognizer
         
         self.mp_drawing = mp.solutions.drawing_utils
         self.drawing_spec = self.mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
-
-        self.stored_scores = []
-        
-        try:
-            with open('reference_values.json', 'r') as f:
-                self.reference_values = json.load(f)
-        except FileNotFoundError:
-            print("경고: reference_values.json 파일을 찾을 수 없습니다.")
-            print("facial_landmark_refer.py를 먼저 실행하여 기준 표정을 설정해주세요.")
-            exit()
-
-    def calculate_smile_score(self, current_aus):
-        au12, au25, au26 = current_aus
-        ref_au12 = self.reference_values['au12']
-        ref_au25 = self.reference_values['au25']
-        ref_au26 = self.reference_values['au26']
-        
-        # 각 AU의 변화율 계산
-        au12_change = (au12 - ref_au12) / ref_au12 * 100
-        au25_change = (au25 - ref_au25) / ref_au25 * 100
-        au26_change = (au26 - ref_au26) / ref_au26 * 100
-        
-        # 가중치 적용 (총합 100%)
-        score = 50 + (
-            0.60 * au12_change +  # 60%
-            0.20 * au25_change +  # 20%
-            0.20 * au26_change    # 20%
-        )
-        
-        return np.clip(score, 0, 100)  # 0-100 범위로 제한
 
     def findFaceMesh(self, img, draw=True):
         input_img = cv2.cvtColor(cv2.flip(img, 1), cv2.COLOR_BGR2RGB)
@@ -119,73 +78,68 @@ class FaceMeshDetector:
                     face.append([x, y])
 
                 self.faces = face
-                
-        gesture_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=input_img)
-        recognition_result = self.recognizer.recognize(gesture_image)
 
-        return img, self.faces, recognition_result.gestures
+        return img, self.faces
 
-    def findSmileScore(self, img):
-        img, faces, _ = self.findFaceMesh(img, draw=False)
+    def findReferenceValues(self, img):
+        img, faces = self.findFaceMesh(img, draw=False)
         if faces:
-            aus = calculate_aus(faces)
-            if aus:
-                score = self.calculate_smile_score(aus)
-                self.stored_scores.append(score)
-            return score
+            return calculate_aus(faces)
         return None
 
-
-# sample run of the module
 def main():
     detector = FaceMeshDetector()
-
     cap = cv2.VideoCapture(0)
-
-    start_time = time.time()
-    duration = 10  # 10초 측정
     
-    print("미소 정도를 10초간 측정합니다. 카메라를 응시해주세요.")
-
+    start_time = time.time()
+    duration = 10  # 10초 동안 측정
+    au_values = []
+    
+    print("기준 표정을 10초간 측정합니다. 카메라를 응시해주세요.")
+    
     while cap.isOpened():
         success, img = cap.read()
-
+        
         if not success:
-            print("Ignoring empty camera frame.")
+            print("빈 프레임을 무시합니다.")
             continue
-
+            
         current_time = time.time()
         elapsed_time = current_time - start_time
         
         if elapsed_time > duration:
             break
-
-        img, faces, _ = detector.findFaceMesh(img)  # Draw mesh
+            
+        img, faces = detector.findFaceMesh(img)
         if faces:
-            score = detector.findSmileScore(img)
-            if score is not None:
-                cv2.putText(img, f"Smile score: {score:.2f}", 
-                           (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
+            aus = calculate_aus(faces)
+            if aus:
+                au_values.append(aus)
+                
         cv2.putText(img, f"Measuring: {int(duration - elapsed_time)}seconds left", 
-                    (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.imshow("Smile Score Measurement", img)
-
-        # Press "q" to leave
+                    (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.imshow("Reference Face Measurement", img)
+        
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
-
+            
     cap.release()
     cv2.destroyAllWindows()
-
-    if detector.stored_scores:
-        # 가중 평균 계산 (최근 값에 더 높은 가중치 부여)
-        weights = np.linspace(1, 2, len(detector.stored_scores))
-        weights = weights / np.sum(weights)  # 정규화
-        final_score = np.average(detector.stored_scores, weights=weights)
-        print(f"\n최종 미소 점수: {final_score:.2f}/100")
+    
+    if au_values:
+        mean_values = np.mean(au_values, axis=0)
+        reference_data = {
+            'au12': float(mean_values[0]),
+            'au25': float(mean_values[1]),
+            'au26': float(mean_values[2])
+        }
+        
+        with open('reference_values.json', 'w') as f:
+            json.dump(reference_data, f)
+            
+        print("기준 표정이 성공적으로 저장되었습니다.")
     else:
-        print("측정에 실패했습니다. 다시 시도해주세요.")
+        print("얼굴이 감지되지 않았습니다. 다시 시도해주세요.")
 
 if __name__ == "__main__":
     main()
