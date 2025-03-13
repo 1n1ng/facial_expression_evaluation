@@ -12,32 +12,56 @@ base_options = mp_python.BaseOptions(model_asset_path='./gesture_recognizer.task
 options = mp_vision.GestureRecognizerOptions(base_options=base_options)
 recognizer = mp_vision.GestureRecognizer.create_from_options(options)
 
-def calculate_au12(landmarks):
-    # Lip Corner Puller - Distance between the corners of the mouth
+def calculate_face_size(landmarks):
+    """얼굴 전체 크기를 측정하는 함수 (정규화에 사용)"""
+    try:
+        # 얼굴 가로 크기 (왼쪽 귀에서 오른쪽 귀까지)
+        left_ear = np.array(landmarks[234])
+        right_ear = np.array(landmarks[454])
+        face_width = dist.euclidean(left_ear, right_ear)
+        
+        # 얼굴 세로 크기 (턱에서 이마까지)
+        chin = np.array(landmarks[152])
+        forehead = np.array(landmarks[10])
+        face_height = dist.euclidean(chin, forehead)
+        
+        # 얼굴 전체 크기 (가로와 세로의 평균)
+        return (face_width + face_height) / 2
+    except IndexError:
+        print("랜드마크 인덱스 오류: 얼굴 크기 계산 실패")
+        return 1.0  # 오류 시 기본값 반환
+
+def calculate_au12(landmarks, face_size):
+    # Lip Corner Puller - 정규화된 거리
     try:
         point_48 = np.array(landmarks[48])
         point_54 = np.array(landmarks[54])
-        return dist.euclidean(point_48, point_54)
+        absolute_distance = dist.euclidean(point_48, point_54)
+        # 얼굴 크기로 정규화
+        return absolute_distance / face_size
     except IndexError:
         print("랜드마크 인덱스 오류: 충분한 얼굴 특징점이 감지되지 않았습니다.")
         return 0.0
 
-def calculate_au25_26(landmarks):
-    # Lips Part and Jaw Drop - Distance between upper and lower lips and jaw
+def calculate_au25_26(landmarks, face_size):
+    # Lips Part and Jaw Drop - 정규화된 거리
     try:
         point_51 = np.array(landmarks[51])
         point_57 = np.array(landmarks[57])
         point_8 = np.array(landmarks[8])
-        lips_part = dist.euclidean(point_51, point_57)
-        jaw_drop = dist.euclidean(point_57, point_8)
+        
+        lips_part = dist.euclidean(point_51, point_57) / face_size
+        jaw_drop = dist.euclidean(point_57, point_8) / face_size
+        
         return lips_part, jaw_drop
     except IndexError:
         print("랜드마크 인덱스 오류: 충분한 얼굴 특징점이 감지되지 않았습니다.")
         return 0.0, 0.0
 
 def calculate_aus(landmarks):
-    au12 = calculate_au12(landmarks)
-    au25, au26 = calculate_au25_26(landmarks)
+    face_size = calculate_face_size(landmarks)
+    au12 = calculate_au12(landmarks, face_size)
+    au25, au26 = calculate_au25_26(landmarks, face_size)
     return au12, au25, au26
 
 class FaceMeshDetector:
